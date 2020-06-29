@@ -1,0 +1,8 @@
+#Custom Cartesian Impedance controller by sending join torques
+stiff_transl: 1000.0 #3500
+damp_transl:  0.0 #40
+
+stiff_rot: 50.0
+damp_rot: 0.0
+
+filename: 'data'

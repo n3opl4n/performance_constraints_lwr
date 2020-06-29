@@ -1,0 +1,14 @@
+<launch>
+    <arg name="node_name"
+         default="performance_constraints_node" />
+
+    <node pkg="performance_constraints"
+          type="performance_constraints"
+          name="$(arg node_name)"
+          output="screen">
+
+        <rosparam command="load"
+                  file="$(find performance_constraints)/config/config.yml" />
+
+    </node>
+</launch>
