@@ -7,6 +7,8 @@
 #include <ros/ros.h>
 #include <ros/package.h>
 #include <time.h>
+// #include <unistd.h> //used for custon getch()
+// #include <termios.h> //used for custon getch()
 
 using namespace std;
 using namespace arma;
@@ -24,13 +26,16 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot)
 	u_n = arma::zeros<arma::vec>(7);
 	q = arma::zeros<arma::vec>(7);
 	q_ref = arma::zeros<arma::vec>(7);
+	qdot_ref = arma::zeros<arma::vec>(7);
 	
 
 	pose = arma::zeros<arma::mat>(3, 4);
 	pose_vec = arma::zeros<arma::vec>(7); //[position' quaternion']'
 	pose_ref = arma::zeros<arma::mat>(3, 4);
 	J = arma::zeros<arma::mat>(6, 7);
-	Jsym = arma::zeros<arma::mat>(6, 7);
+	Jinv = arma::zeros<arma::mat>(7, 6);
+	JinvW = arma::zeros<arma::mat>(7, 6);
+	M = arma::zeros<arma::mat>(7, 7);
 	
 	p = arma::zeros<arma::vec>(3);
     p_ref = arma::zeros<arma::vec>(3);
@@ -52,40 +57,44 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot)
 	* Separate position and orientation calculation
 	*/
     pConstraints.reset(new PC(_manipulability,  _serial, _joints, false));
-    pConstraints->setVerbose(1); //Set debug info. Comment or set to 0 to disable
+    // pConstraints->setVerbose(1); //Set debug info. Comment or set to 0 to disable
 }
 
 void PerfConstraintsLWR::readParameters()
 {
     std::cout << "[readParameters] Reading Parameter list ..." << std::endl;
     // load parameters and gains
+    nh_.getParam("use_impedance", use_impedance); 
     nh_.getParam("stiff_transl", stiff_transl);
     nh_.getParam("stiff_rot", stiff_rot);
     nh_.getParam("damp_transl", damp_transl);
     nh_.getParam("damp_rot", damp_rot);
+    nh_.getParam("nullspace_gain", nullspace_gain);
+    nh_.getParam("nullspace_damping", nullspace_damping);
 
- //    if (nh_.hasParam("filename")) {
- //    	nh_.getParam("filename", filename);
- //    }
 
-	// string DIR = ros::package::getPath("performance_constraints");
-	// string PATH = DIR + "/experiments/" + filename + ".dat";
+    if (nh_.hasParam("filename")) {
+    	nh_.getParam("filename", filename);
+    }
 
- //    //check if previous file exists and rename with _prev suffix
- //    ifstream f(PATH);
-	// if (f.good()) {
-	// 	string NEW_PATH = DIR + "/experiments/" + filename + "_prev.dat";
-	// 	rename(PATH.c_str(), NEW_PATH.c_str());
-	// }
-	// f.close();
+	string DIR = ros::package::getPath("performance_constraints");
+	string PATH = DIR + "/experiments/" + filename + ".dat";
 
-	// outStream.open(PATH);
-	// if (outStream.is_open()) {
-	// 	write2file = true;
-	// 	cout << "Writing to: " << PATH << endl;
-	// }
-	// else
-	// 	cout << "Error writing to: " << PATH << endl;
+    //check if previous file exists and rename with _prev suffix
+    ifstream f(PATH);
+	if (f.good()) {
+		string NEW_PATH = DIR + "/experiments/" + filename + "_prev.dat";
+		rename(PATH.c_str(), NEW_PATH.c_str());
+	}
+	f.close();
+
+	outStream.open(PATH);
+	if (outStream.is_open()) {
+		write2file = true;
+		cout << "Writing to: " << PATH << endl;
+	}
+	else
+		cout << "Error writing to: " << PATH << endl;
 
 	
 	// Print messages
@@ -110,7 +119,7 @@ void PerfConstraintsLWR::measure()
 
 	pose = robot->getTaskPose().matrix().toArma().submat(0,0,2,3);
 
-	xdotRaw = robot->getTwist().toArma(); //read Cartesian velocity (J*q_dot)
+	xdotRaw = robot->getTwist().toArma(); //read Cartesian velocity (J*qdot_ref)
 	
 	//filter xdot
 	double tau = 0.01;
@@ -133,6 +142,10 @@ void PerfConstraintsLWR::measure()
 
 	//read Jacobian
     J = robot->getJacobian().toArma();
+    Jinv = arma::pinv(J);
+
+   	M = robot->getMassMatrix().toArma();
+
     q = robot->getJointPosition().toArma(); //read joint position
 	qdot = robot->getJointVelocity().toArma(); //read joint velocity
 
@@ -145,32 +158,42 @@ void PerfConstraintsLWR::update()
 {
 	time += robot->cycle;
 
-	// update orientation error
-	// arma::vec te=(Q.t()*Quat_ref); if (te(0)<0.0) Quat_ref=-Quat_ref; //avoid incontinuity
-	quatDiff = arl::math::getQuatDifference(Quat_ref, Q);
-	e_o = 2.0*quatDiff.rows(1, 3);
+	pConstraints->calculateGradient(Q); //calculate the gradient of a performance index [see constructor for details]
+	A = pConstraints->getGradient();
 
-	//Cartesian impedance control without inertia reshaping
-	u_x = J.submat(0, 0, 2, 6).t() * ( K_imp.submat(0,0,2,2)*(p_ref - p) + D_imp.submat(0,0,2,2)*(/*v_ref*/ - xdot.subvec(0,2))  ) 
-		+ J.submat(3, 0, 5, 6).t() * ( K_imp.submat(3,3,5,5)*e_o + D_imp.submat(3,3,5,5)*(/*omega_ref*/ - xdot.subvec(3,5)) ); 
+	if (use_impedance) { //send torques to implement Cartesian impedance
+		// update orientation error
+		// arma::vec te=(Q.t()*Quat_ref); if (te(0)<0.0) Quat_ref=-Quat_ref; //avoid incontinuity
+		quatDiff = arl::math::getQuatDifference(Quat_ref, Q);
+		e_o = 2.0*quatDiff.rows(1, 3);
 
-	//Null space controller
-	pConstraints->updateCurrentConfiguration(Q); //measure the robot's configuration and put it here
-	pConstraints->get_Jsym_spatial(Q, Jsym); //calculate J from current q
-	pConstraints->updateCurrentJacobian(Jsym); 
-	pConstraints->calculateGradient();
-	arma::vec A = pConstraints->getGradient();
+		//Cartesian impedance control without inertia reshaping
+		u_x = J.submat(0, 0, 2, 6).t() * ( K_imp.submat(0,0,2,2)*(p_ref - p) + D_imp.submat(0,0,2,2)*(/*v_ref*/ - xdot.subvec(0,2))  ) 
+			+ J.submat(3, 0, 5, 6).t() * ( K_imp.submat(3,3,5,5)*e_o + D_imp.submat(3,3,5,5)*(/*omega_ref*/ - xdot.subvec(3,5)) ); 
 
-	// u_n = ... ;
+		//Null space controller
+		JinvW = arma::inv(M) * J.t() * arma::inv( J * arma::inv(M) * J.t() ); //dynamically consistent inverse 
+		u_n = ( arma::eye<arma::mat>(7,7) - JinvW * J ) * ( nullspace_gain * A - nullspace_damping * qdot ); 
 
-	//The controller
-	u = u_x + u_n;
+		//The controller
+		u = u_x + u_n;
+	}
+	else { //joint position control
+		// qdot_ref = Jinv * x_ref); //differential inverse kinematics 
+		qdot_ref.fill(0.0); //set zero if no task motion is commanded
 
+		qdot_ref += (arma::eye<arma::mat>(7,7)-Jinv*J) * (nullspace_gain * A - nullspace_damping * qdot );
+
+		q_ref += qdot_ref * robot->cycle;
+	}
 }
 
 void PerfConstraintsLWR::command()
 {
-	robot->setJointTorque(u);
+	if (use_impedance)
+		robot->setJointTorque(u);
+	else
+		robot->setJointPosition(q_ref);
 }
 
 /**
@@ -181,7 +204,7 @@ void PerfConstraintsLWR::print_to_monitor()
 	if (fmod(time, 1.) < 0.001) { //plot every once in a while
 
 		cout << "T:" << std::fixed << std::setprecision(1) << time; // << " [" << std::fixed << std::setprecision(1) <<robot->cycle*1000. << "ms]";
-
+		cout << " w:" << std::setprecision(2) << std::setw(4) << pConstraints->getPerformanceIndex();
 		cout << endl; //empty line
 	}
 }
@@ -202,10 +225,53 @@ void PerfConstraintsLWR::write_to_file(){
 	}
 }
 
+// /// Keyboard control in a thread
+// void PerfConstraintsLWR::keyboardControl()
+// {
+// 	//change terminal options to rutern immediately after a keyboard hit
+// 	struct termios old = {0};
+//     if (tcgetattr(0, &old) < 0)
+//             perror("tcsetattr()");
+//     old.c_lflag &= ~ICANON;
+//     old.c_lflag &= ~ECHO;
+//     old.c_cc[VMIN] = 1;
+//     old.c_cc[VTIME] = 0;
+//     if (tcsetattr(0, TCSANOW, &old) < 0)
+//             perror("tcsetattr ICANON");
 
-bool PerfConstraintsLWR::run()
-{
-	
+// 	int key=0;
+// 	while (key!=10) { //Enter
+// 		key = getch();
+// 		// std::cout << "Pressed: " << key << std::endl;
+
+// 		switch (key) {
+// 			case 32: //Spacebar
+// 				cout << "Resetting system..." << endl;
+// 				// reset_flag = true;
+// 				break;
+// 		}
+
+// 	}
+
+// 	//reset terminal options (hopefully)
+// 	old.c_lflag |= ICANON;
+//     old.c_lflag |= ECHO;
+//     if (tcsetattr(0, TCSADRAIN, &old) < 0)
+//             perror ("tcsetattr ~ICANON");
+
+// 	cout << "Stopping" << endl;
+
+// 	// user_stop1 = true;
+// }
+
+void PerfConstraintsLWR::init() {
+	//move to initial pose
+	arma::vec qT;
+	qT << 0.4436 << 0.4014 << -0.6207 << -1.3963 << 1.6780 << 0.1835 << 0.0953;
+	robot->setMode(arl::robot::Mode::POSITION_CONTROL); //position mode
+	cout << "Moving to start configuration..." << endl;
+	robot->setJointTrajectory(qT, 6.0);
+
 	//Generate trajectory to follow
     pose = robot->getTaskPose().matrix().toArma().submat(0,0,2,3);
 	p = pose.col(3);
@@ -213,19 +279,25 @@ bool PerfConstraintsLWR::run()
 	pose_ref = pose;
 
 	Qd = arl::math::rotToQuat(pose.submat(0, 0, 2, 2)); //[keep Q desired on the initial one]
-
 	Quat_ref = Qd; //enable this in the case of pure orientation control
-	
-	
-	// Qprev = Qd;
+	Qprev = Qd;
 
 	//Save starting configuration
     q_ref = robot->getJointPosition().toArma();
+}
 
-    setImpedanceParams();
+bool PerfConstraintsLWR::run()
+{
+	// std::thread waitInput(&PerfConstraintsLWR::keyboardControl, this);
 
-	//Switch to impedance control
-	robot->setMode(arl::robot::Mode::TORQUE_CONTROL);
+	init();
+
+    if (use_impedance) { //change mode only if we want to send torques
+	    setImpedanceParams();
+
+		//Switch to impedance control
+		robot->setMode(arl::robot::Mode::TORQUE_CONTROL);
+	}
 
 	// a mutex in robot should be locked to ensure no other controller is running
 	// on this robot
