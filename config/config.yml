@@ -1,6 +1,6 @@
-use_impedance: false #set false for joint position control
-nullspace_gain: 1.0
-nullspace_damping: 0.0
+use_impedance: true #set false for joint position control
+nullspace_gain: 20.0
+nullspace_damping: 1.0
 
 #Custom Cartesian Impedance controller by sending join torques
 stiff_transl: 1000.0 #3500

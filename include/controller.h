@@ -50,7 +50,7 @@ private:
 	ros::NodeHandle nh_;
 	arma::vec qdot, u, u_x, u_n, p, p_ref, p_init, p_ref_raw, Q, Qprev, xdot, xdotRaw, Qd, e_p,  e_o,  pdot, quatDiff, forces, forces_filtered;
 	arma::vec q, q_ref, pose_vec, Quat_ref, omega_ref, qdot_ref;
-	arma::mat pose, pose_ref, J, Jinv, JinvW, M, K_imp, D_imp, R, dmp_ref, Pose_history;
+	arma::mat pose, pose_ref, J, Jinv, JinvW, M, Minv, K_imp, D_imp, R, dmp_ref, Pose_history;
 	arma::vec Pose_var, ww, forces_ref; 
 	
 	std::string filename, inputfile;

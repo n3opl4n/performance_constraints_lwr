@@ -36,6 +36,7 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot)
 	Jinv = arma::zeros<arma::mat>(7, 6);
 	JinvW = arma::zeros<arma::mat>(7, 6);
 	M = arma::zeros<arma::mat>(7, 7);
+	Minv = arma::zeros<arma::mat>(7, 7);
 	
 	p = arma::zeros<arma::vec>(3);
     p_ref = arma::zeros<arma::vec>(3);
@@ -77,7 +78,7 @@ void PerfConstraintsLWR::readParameters()
     	nh_.getParam("filename", filename);
     }
 
-	string DIR = ros::package::getPath("performance_constraints");
+	string DIR = ros::package::getPath("performance_constraints_lwr");
 	string PATH = DIR + "/experiments/" + filename + ".dat";
 
     //check if previous file exists and rename with _prev suffix
@@ -119,13 +120,13 @@ void PerfConstraintsLWR::measure()
 
 	pose = robot->getTaskPose().matrix().toArma().submat(0,0,2,3);
 
-	xdotRaw = robot->getTwist().toArma(); //read Cartesian velocity (J*qdot_ref)
+	xdot = robot->getTwist().toArma(); //read Cartesian velocity (J*qdot_ref)
 	
-	//filter xdot
-	double tau = 0.01;
-	for (unsigned int i=0; i<6; i++) {
-		xdot.at(i)=(xdotRaw.at(i)*robot->cycle + xdot.at(i)*tau) / (tau+robot->cycle);
-	}
+	//filter xdot [Something is wrong with this part and the robot stops]
+	// double tau = 0.01;
+	// for (unsigned int i=0; i<6; i++) {
+	// 	xdot.at(i)=(xdotRaw.at(i)*robot->cycle + xdot.at(i)*tau) / (tau+robot->cycle);
+	// }
 
 	// update current position & orientation
 	p = pose.col(3);
@@ -158,7 +159,7 @@ void PerfConstraintsLWR::update()
 {
 	time += robot->cycle;
 
-	pConstraints->calculateGradient(Q); //calculate the gradient of a performance index [see constructor for details]
+	pConstraints->calculateGradient(q); //calculate the gradient of a performance index [see constructor for details]
 	A = pConstraints->getGradient();
 
 	if (use_impedance) { //send torques to implement Cartesian impedance
@@ -172,7 +173,9 @@ void PerfConstraintsLWR::update()
 			+ J.submat(3, 0, 5, 6).t() * ( K_imp.submat(3,3,5,5)*e_o + D_imp.submat(3,3,5,5)*(/*omega_ref*/ - xdot.subvec(3,5)) ); 
 
 		//Null space controller
-		JinvW = arma::inv(M) * J.t() * arma::inv( J * arma::inv(M) * J.t() ); //dynamically consistent inverse 
+		Minv = arma::inv(M);
+		JinvW = Minv * J.t() * arma::inv( J * Minv * J.t() ); //dynamically consistent inverse 
+
 		u_n = ( arma::eye<arma::mat>(7,7) - JinvW * J ) * ( nullspace_gain * A - nullspace_damping * qdot ); 
 
 		//The controller
@@ -201,7 +204,7 @@ void PerfConstraintsLWR::command()
  */
 void PerfConstraintsLWR::print_to_monitor()
 {
-	if (fmod(time, 1.) < 0.001) { //plot every once in a while
+	if (fmod(time, .25) < 0.001) { //plot every once in a while
 
 		cout << "T:" << std::fixed << std::setprecision(1) << time; // << " [" << std::fixed << std::setprecision(1) <<robot->cycle*1000. << "ms]";
 		cout << " w:" << std::setprecision(2) << std::setw(4) << pConstraints->getPerformanceIndex();
@@ -216,10 +219,10 @@ void PerfConstraintsLWR::write_to_file(){
 		for (int i=0; i<3; i++)
 			outStream << std::fixed << std::setprecision(6) << p(i)<< ","; //2:4
 
+		for (int i=0; i<7; i++)
+			outStream << std::fixed << std::setprecision(6) << q.at(i) << ","; //5:11 joint values
 
-		for (int i=0; i<4; i++)
-			outStream << std::fixed << std::setprecision(6) << Q.at(i) << ","; //32:35 Quaternion orientation
-
+		outStream << std::fixed << std::setprecision(6) << pConstraints->getPerformanceIndex() << ",";
 
 		outStream << endl; //newline
 	}
@@ -267,7 +270,7 @@ void PerfConstraintsLWR::write_to_file(){
 void PerfConstraintsLWR::init() {
 	//move to initial pose
 	arma::vec qT;
-	qT << 0.4436 << 0.4014 << -0.6207 << -1.3963 << 1.6780 << 0.1835 << 0.0953;
+	qT << 0.4436 << 0.4014 << -0.6207 << -1.3963 << 1.6780 << 0.2835 << 0.0953;
 	robot->setMode(arl::robot::Mode::POSITION_CONTROL); //position mode
 	cout << "Moving to start configuration..." << endl;
 	robot->setJointTrajectory(qT, 6.0);
@@ -292,13 +295,13 @@ bool PerfConstraintsLWR::run()
 
 	init();
 
-    if (use_impedance) { //change mode only if we want to send torques
+	if (use_impedance) { //change mode only if we want to send torques
 	    setImpedanceParams();
 
 		//Switch to impedance control
 		robot->setMode(arl::robot::Mode::TORQUE_CONTROL);
 	}
-
+	std::cout << "Starting controller!\n";
 	// a mutex in robot should be locked to ensure no other controller is running
 	// on this robot
 	while (robot->isOk())
