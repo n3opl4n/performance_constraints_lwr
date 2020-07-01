@@ -176,7 +176,7 @@ void PerfConstraintsLWR::update()
 		Minv = arma::inv(M);
 		JinvW = Minv * J.t() * arma::inv( J * Minv * J.t() ); //dynamically consistent inverse 
 
-		u_n = ( arma::eye<arma::mat>(7,7) - JinvW * J ) * ( nullspace_gain * A - nullspace_damping * qdot ); 
+		u_n = ( arma::eye<arma::mat>(7,7) - J.t() * JinvW.t() ) * ( nullspace_gain * A - nullspace_damping * qdot ); 
 
 		//The controller
 		u = u_x + u_n;
@@ -185,7 +185,7 @@ void PerfConstraintsLWR::update()
 		// qdot_ref = Jinv * x_ref); //differential inverse kinematics 
 		qdot_ref.fill(0.0); //set zero if no task motion is commanded
 
-		qdot_ref += (arma::eye<arma::mat>(7,7)-Jinv*J) * (nullspace_gain * A - nullspace_damping * qdot );
+		qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * A - nullspace_damping * qdot );
 
 		q_ref += qdot_ref * robot->cycle;
 	}
