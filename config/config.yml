@@ -1,12 +1,14 @@
-use_impedance: true #set false for joint position control
+use_impedance: false #set true for impedance & false for admittance control
 nullspace_gain: 20.0
 nullspace_damping: 1.0
 
-#Custom Cartesian Impedance controller by sending join torques
-stiff_transl: 1000.0 #3500
-damp_transl:  0.0 #40
+#Custom Cartesian controller by sending join torques
+stiff_transl: 1000.0 #3500 #only for impedance
+damp_transl:  20.0 #40
+inertia_transl: 5.0 #only for admittance
 
-stiff_rot: 50.0
-damp_rot: 0.0
+stiff_rot: 50.0 #only for impedance
+damp_rot: 1.0
+inertia_rot: 1.0 #only for admittance
 
 filename: 'data'
