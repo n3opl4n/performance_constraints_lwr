@@ -141,7 +141,7 @@ void PerfConstraintsLWR::setImpedanceParams() {
 	temp_c << damp_transl << damp_transl << damp_transl << damp_rot << damp_rot << damp_rot; //damping
 	C_d = diagmat(temp_c);
 	temp_m << inertia_transl << inertia_transl << inertia_transl << inertia_rot << inertia_rot << inertia_rot; //inertia
-	M_d = diagmat(temp_c);
+	M_d = diagmat(temp_m);
 
 }
 
@@ -226,12 +226,13 @@ void PerfConstraintsLWR::update()
 
 		arma::vec C_extra = 2.0 * arma::sqrt(M_d * K_eq);
 
-		v_ref = arma::inv(M_d / robot->cycle + C_d /*+ arma::diagmat(C_extra)*/ ) * (M_d * v_ref / robot->cycle + ati_forces_ -  F_v);
+		v_ref = arma::inv(M_d / robot->cycle + arma::max(C_d, arma::diagmat(C_extra))) * (M_d * v_ref / robot->cycle + ati_forces_ +  F_v);
 	
+		v_ref.subvec(3,5).fill(0.0); //disable compliance in rotation
 		// saturateVelocity(index);
 
 		qdot_ref = Jinv * v_ref; //differential inverse kinematics 
-		qdot_ref.fill(0.0); //set zero if no task motion is commanded
+		// qdot_ref.fill(0.0); //set zero if no task motion is commanded
 
 		//nullsapce strategy (A needs to be calculated wrt the joint values)
 		// qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * A - nullspace_damping * qdot );
@@ -265,7 +266,7 @@ void PerfConstraintsLWR::print_to_monitor()
 
 		cout << " v_ref:[";
 		for (int i=0; i<3; i++)
-			cout << std::setw(5) << std::fixed << std::setprecision(3) << v_ref(i) << " ";
+			cout << std::setw(5) << std::fixed << std::setprecision(3) << F_v(i) << " ";
 		cout << "] ";
 
 		cout << endl; //empty line
@@ -339,7 +340,7 @@ void PerfConstraintsLWR::write_to_file(){
 void PerfConstraintsLWR::init() {
 	//move to initial pose
 	arma::vec qT;
-	qT << 0.4436 << 0.4014 << -0.6207 << -1.3963 << 1.6780 << 0.2835 << 0.0953;
+	qT << 0.0 << 0.4014 << 0.0 << -1.3963 << 0.0 << 1.0835 << 0.0;
 	robot->setMode(arl::robot::Mode::POSITION_CONTROL); //position mode
 	cout << "Moving to start configuration..." << endl;
 	robot->setJointTrajectory(qT, 6.0);
@@ -364,8 +365,9 @@ bool PerfConstraintsLWR::run()
 
 	init();
 
+	setImpedanceParams();
+
 	if (use_impedance) { //change mode only if we want to send torques
-	    setImpedanceParams();
 
 		//Switch to impedance control
 		robot->setMode(arl::robot::Mode::TORQUE_CONTROL);
