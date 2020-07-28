@@ -46,7 +46,8 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot,
     C_d = arma::zeros<arma::mat>(6, 6);
     M_d = arma::zeros<arma::mat>(6, 6);
     K_eq = arma::zeros<arma::vec>(6);
-    
+    C_extra = arma::zeros<arma::vec>(6);
+
     R= arma::zeros<arma::mat>(3, 3);
     Qprev = arma::zeros<arma::vec>(4);
     Quat_ref = arma::zeros<arma::vec>(4);
@@ -222,9 +223,13 @@ void PerfConstraintsLWR::update()
 		F_v = pConstraints->getSingularityTreatmentForce();
 		A = pConstraints->getGradient();
 
-		K_eq = lambda * arma::pow(A, 2) / pow(pConstraints->getPerformanceIndex() - w_thT, 2);
+		if (pConstraints->getPerformanceIndex() <= w_thT) //careful! Only the position part of w is considered here
+			K_eq = lambda * arma::pow(A, 2) / pow(pConstraints->getPerformanceIndex() - w_crT, 2);
+		else
+			K_eq.zeros();
 
-		arma::vec C_extra = 2.0 * arma::sqrt(M_d * K_eq);
+		double zeta = 1.; //0.7 for slightly underdamped. Set 1 for critically damped
+		C_extra = zeta * ( 2.0 * arma::sqrt(M_d * K_eq) );
 
 		v_ref = arma::inv(M_d / robot->cycle + arma::max(C_d, arma::diagmat(C_extra))) * (M_d * v_ref / robot->cycle + ati_forces_ +  F_v);
 	
@@ -254,19 +259,24 @@ void PerfConstraintsLWR::command()
  */
 void PerfConstraintsLWR::print_to_monitor()
 {
-	if (fmod(time, .25) < 0.001) { //plot every once in a while
+	if (fmod(time, .15) < 0.001) { //plot every once in a while
 
 		cout << "T:" << std::fixed << std::setprecision(1) << time; // << " [" << std::fixed << std::setprecision(1) <<robot->cycle*1000. << "ms]";
 		cout << " w:" << std::setprecision(2) << std::setw(4) << pConstraints->getPerformanceIndex();
 		
 		cout << " F_h:[";
 		for (int i=0; i<3; i++)
-			cout << std::setw(5) << std::fixed << std::setprecision(3) << ati_forces_(i) << " ";
+			cout << std::setw(5) << std::fixed << std::setprecision(1) << ati_forces_(i) << " ";
 		cout << "] ";
 
-		cout << " v_ref:[";
+		cout << " F_v:[";
 		for (int i=0; i<3; i++)
-			cout << std::setw(5) << std::fixed << std::setprecision(3) << F_v(i) << " ";
+			cout << std::setw(5) << std::fixed << std::setprecision(1) << F_v(i) << " ";
+		cout << "] ";
+
+		cout << " C_extra:[";
+		for (int i=0; i<3; i++)
+			cout << std::setw(5) << std::fixed << std::setprecision(1) << C_extra(i) << " ";
 		cout << "] ";
 
 		cout << endl; //empty line
@@ -293,6 +303,9 @@ void PerfConstraintsLWR::write_to_file(){
 
 		for (int i=0; i<6; i++)
 			outStream << std::fixed << std::setprecision(6) << A.at(i) << ","; //25:30 gradient 
+
+		for (int i=0; i<6; i++)
+			outStream << std::fixed << std::setprecision(6) << F_v.at(i) << ","; //31:36 gradient 
 
 		outStream << endl; //newline
 	}
