@@ -54,6 +54,7 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot,
 
     v_ref=arma::zeros<arma::vec>(6);
     F_v=arma::zeros<arma::vec>(6);
+    U_v=arma::zeros<arma::vec>(6);
 
     ft_sensor_ = ft_sensor;
 
@@ -236,11 +237,21 @@ void PerfConstraintsLWR::update()
 		v_ref.subvec(3,5).fill(0.0); //disable compliance in rotation
 		// saturateVelocity(index);
 
+		U_v += arma::diagmat(-F_v) * v_ref * robot->cycle; 
+
+		//reset Uv just to monitor what is going on
+		if (pConstraints->getPerformanceIndex() > 1.2 * w_thT)
+			U_v.zeros();
+
 		qdot_ref = Jinv * v_ref; //differential inverse kinematics 
 		// qdot_ref.fill(0.0); //set zero if no task motion is commanded
 
 		//nullsapce strategy (A needs to be calculated wrt the joint values)
 		// qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * A - nullspace_damping * qdot );
+
+		//simple nullspace strategy. just rotate a joint
+		arma::vec qdot_null; qdot_null.zeros(7); qdot_null(4) = -0.02;
+		qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * qdot_null /*- nullspace_damping * qdot*/ );
 
 		q_ref += qdot_ref * robot->cycle;
 	}	
@@ -279,6 +290,12 @@ void PerfConstraintsLWR::print_to_monitor()
 			cout << std::setw(5) << std::fixed << std::setprecision(1) << C_extra(i) << " ";
 		cout << "] ";
 
+		cout << " U_v: " << std::setprecision(3) << arma::sum(U_v.subvec(0,2)) << " [";
+		for (int i=0; i<3; i++)
+			cout << std::setw(5) << std::fixed << std::setprecision(3) << U_v(i) << " ";
+		cout << "] ";
+		
+
 		cout << endl; //empty line
 	}
 }
@@ -305,55 +322,20 @@ void PerfConstraintsLWR::write_to_file(){
 			outStream << std::fixed << std::setprecision(6) << A.at(i) << ","; //25:30 gradient 
 
 		for (int i=0; i<6; i++)
-			outStream << std::fixed << std::setprecision(6) << F_v.at(i) << ","; //31:36 gradient 
+			outStream << std::fixed << std::setprecision(6) << F_v.at(i) << ","; //31:36 constraint forces 
+
+		for (int i=0; i<6; i++)
+			outStream << std::fixed << std::setprecision(6) << U_v.at(i) << ","; //37:42 energy 
 
 		outStream << endl; //newline
 	}
 }
 
-// /// Keyboard control in a thread
-// void PerfConstraintsLWR::keyboardControl()
-// {
-// 	//change terminal options to rutern immediately after a keyboard hit
-// 	struct termios old = {0};
-//     if (tcgetattr(0, &old) < 0)
-//             perror("tcsetattr()");
-//     old.c_lflag &= ~ICANON;
-//     old.c_lflag &= ~ECHO;
-//     old.c_cc[VMIN] = 1;
-//     old.c_cc[VTIME] = 0;
-//     if (tcsetattr(0, TCSANOW, &old) < 0)
-//             perror("tcsetattr ICANON");
-
-// 	int key=0;
-// 	while (key!=10) { //Enter
-// 		key = getch();
-// 		// std::cout << "Pressed: " << key << std::endl;
-
-// 		switch (key) {
-// 			case 32: //Spacebar
-// 				cout << "Resetting system..." << endl;
-// 				// reset_flag = true;
-// 				break;
-// 		}
-
-// 	}
-
-// 	//reset terminal options (hopefully)
-// 	old.c_lflag |= ICANON;
-//     old.c_lflag |= ECHO;
-//     if (tcsetattr(0, TCSADRAIN, &old) < 0)
-//             perror ("tcsetattr ~ICANON");
-
-// 	cout << "Stopping" << endl;
-
-// 	// user_stop1 = true;
-// }
-
 void PerfConstraintsLWR::init() {
 	//move to initial pose
 	arma::vec qT;
-	qT << 0.0 << 0.4014 << 0.0 << -1.3963 << 0.0 << 1.0835 << 0.0;
+	// qT << 0.0 << 0.4014 << 0.0 << -1.3963 << 0.0 << 1.0835 << 0.0;
+	qT << 0.0 << 0.9599 << 0.0 << -1.85 << 0.1 << -1.815 << 0.0;
 	robot->setMode(arl::robot::Mode::POSITION_CONTROL); //position mode
 	cout << "Moving to start configuration..." << endl;
 	robot->setJointTrajectory(qT, 6.0);

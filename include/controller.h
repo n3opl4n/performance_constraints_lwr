@@ -51,7 +51,7 @@ private:
 	arma::vec qdot, u, u_x, u_n, p, p_ref, p_init, p_ref_raw, v_ref, Q, Qprev, xdot, xdotRaw, Qd, e_p,  e_o,  pdot, quatDiff, forces, forces_filtered;
 	arma::vec q, q_ref, pose_vec, Quat_ref, omega_ref, qdot_ref, F_v;
 	arma::mat pose, pose_ref, J, Jinv, JinvW, M, Minv, K_d, C_d, M_d, R;
-	arma::vec K_eq, C_extra; 
+	arma::vec K_eq, C_extra, U_v; 
 	
 	double w_thT, w_crT, w_thR, w_crR, lambda;
 
