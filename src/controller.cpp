@@ -224,17 +224,22 @@ void PerfConstraintsLWR::update()
 		F_v = pConstraints->getSingularityTreatmentForce();
 		A = pConstraints->getGradient();
 
-		if (pConstraints->getPerformanceIndex() <= w_thT) //careful! Only the position part of w is considered here
-			K_eq = lambda * arma::pow(A, 2) / pow(pConstraints->getPerformanceIndex() - w_crT, 2);
+		if (pConstraints->getPerformanceIndex(0) <= w_thT) //the position part of w is considered here
+			K_eq.subvec(0,2) = lambda * arma::pow(A.subvec(0,2), 2) / pow(pConstraints->getPerformanceIndex(0) - w_crT, 2);
 		else
-			K_eq.zeros();
+			K_eq.subvec(0,2).zeros();
 
-		double zeta = 1.; //0.7 for slightly underdamped. Set 1 for critically damped
+		if (pConstraints->getPerformanceIndex(1) <= w_thR) //the orientation part of w is considered here
+			K_eq.subvec(3,5) = lambda * arma::pow(A.subvec(3,5), 2) / pow(pConstraints->getPerformanceIndex(1) - w_crR, 2);
+		else
+			K_eq.subvec(3,5).zeros();
+
+		double zeta = 1.2; //0.7 for slightly underdamped. Set 1 for critically damped
 		C_extra = zeta * ( 2.0 * arma::sqrt(M_d * K_eq) );
 
 		v_ref = arma::inv(M_d / robot->cycle + arma::max(C_d, arma::diagmat(C_extra))) * (M_d * v_ref / robot->cycle + ati_forces_ +  F_v);
 	
-		v_ref.subvec(3,5).fill(0.0); //disable compliance in rotation
+		// v_ref.subvec(3,5).fill(0.0); //disable compliance in rotation
 		// saturateVelocity(index);
 
 		U_v += arma::diagmat(-F_v) * v_ref * robot->cycle; 
@@ -250,8 +255,8 @@ void PerfConstraintsLWR::update()
 		// qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * A - nullspace_damping * qdot );
 
 		//simple nullspace strategy. just rotate a joint
-		arma::vec qdot_null; qdot_null.zeros(7); qdot_null(4) = -0.02;
-		qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * qdot_null /*- nullspace_damping * qdot*/ );
+		// arma::vec qdot_null; qdot_null.zeros(7); qdot_null(4) = -0.02;
+		// qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * qdot_null /*- nullspace_damping * qdot*/ );
 
 		q_ref += qdot_ref * robot->cycle;
 	}	
@@ -286,14 +291,14 @@ void PerfConstraintsLWR::print_to_monitor()
 		cout << "] ";
 
 		cout << " C_extra:[";
-		for (int i=0; i<3; i++)
+		for (int i=0; i<6; i++)
 			cout << std::setw(5) << std::fixed << std::setprecision(1) << C_extra(i) << " ";
 		cout << "] ";
 
-		cout << " U_v: " << std::setprecision(3) << arma::sum(U_v.subvec(0,2)) << " [";
-		for (int i=0; i<3; i++)
-			cout << std::setw(5) << std::fixed << std::setprecision(3) << U_v(i) << " ";
-		cout << "] ";
+		// cout << " U_v: " << std::setprecision(3) << arma::sum(U_v.subvec(0,2)) << " [";
+		// for (int i=0; i<3; i++)
+		// 	cout << std::setw(5) << std::fixed << std::setprecision(3) << U_v(i) << " ";
+		// cout << "] ";
 		
 
 		cout << endl; //empty line
@@ -327,6 +332,8 @@ void PerfConstraintsLWR::write_to_file(){
 		for (int i=0; i<6; i++)
 			outStream << std::fixed << std::setprecision(6) << U_v.at(i) << ","; //37:42 energy 
 
+		outStream << std::fixed << std::setprecision(6) << pConstraints->getPerformanceIndex(1) << ","; //24 w
+
 		outStream << endl; //newline
 	}
 }
@@ -335,7 +342,8 @@ void PerfConstraintsLWR::init() {
 	//move to initial pose
 	arma::vec qT;
 	// qT << 0.0 << 0.4014 << 0.0 << -1.3963 << 0.0 << 1.0835 << 0.0;
-	qT << 0.0 << 0.9599 << 0.0 << -1.85 << 0.1 << -1.815 << 0.0;
+	// qT << 0.0 << 0.9599 << 0.0 << -1.85 << 0.1 << -1.815 << 0.0; 
+	qT << -M_PI/2.0 << -0.4014 << 0.0 << 1.3963 << 0.1 << -1.34835 << 0.0;
 	robot->setMode(arl::robot::Mode::POSITION_CONTROL); //position mode
 	cout << "Moving to start configuration..." << endl;
 	robot->setJointTrajectory(qT, 6.0);
