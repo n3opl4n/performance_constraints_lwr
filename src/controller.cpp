@@ -179,7 +179,8 @@ void PerfConstraintsLWR::measure()
 	pose_vec.subvec(3,6) = Q;
 
 	//read Jacobian
-    J = robot->getJacobian().toArma();
+    J = robot->getJacobian().toArma(); //full jacobian
+    // J = robot->getJacobian().toArma().rows(0,2); //use only position part of J (if you don't care about orientation)
     Jinv = arma::pinv(J);
 
    	M = robot->getMassMatrix().toArma();
@@ -256,7 +257,7 @@ void PerfConstraintsLWR::update()
 
 		//nullsapce strategy (A needs to be calculated wrt the joint values)
 		nullOptimization->calculateGradient(q);
-		arma::vec Anull = nullOptimization.getGradientScaled(10.0 * M_PI / 180.0, 5.0 * M_PI / 180.0); //Params: (clearange, range)
+		arma::vec Anull = nullOptimization->getGradientScaled(10.0 * M_PI / 180.0, 5.0 * M_PI / 180.0); //Params: (clearange, range)
 		qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * Anull - nullspace_damping * qdot );
 
 		//simple nullspace strategy. just rotate a joint

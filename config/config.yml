@@ -4,11 +4,11 @@ nullspace_damping: 1.0
 
 #Custom Cartesian controller by sending join torques
 stiff_transl: 1000.0 #3500 #only for impedance
-damp_transl:  30.0 #40
+damp_transl:  50.0 #40
 inertia_transl: 5.0 #only for admittance
 
 stiff_rot: 50.0 #only for impedance
-damp_rot: 1.0
+damp_rot: 2.0
 inertia_rot: 0.2 #only for admittance
 
 filename: 'data'
