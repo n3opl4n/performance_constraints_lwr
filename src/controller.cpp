@@ -79,7 +79,7 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot,
 	* 5: lambda for translation or combined
 	* 6: lambda for rotation  [OPTIONAL: Leave empty for combined indices]
 	* 7: Performance indices [_manipulability, _MSV, _iCN]  
-	* 8: Calculation methods: _serial, _parallel, _parallel_nonblock (not advised)
+	* 8: Calculation methods: _serial, _parallel
 	* 9: Gradient with respect to: [_cartesian (default), _joints] Selectable for only gradient calculation
 	*/
     w_thT=0.14;
@@ -89,6 +89,9 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot,
     lambda = 1.0;
     pConstraints.reset(new PC(w_crT, w_thT, w_crR, w_thR, lambda, lambda, _MSV, _serial)); //Using MSV (better for human robot interaction)
     // pConstraints->setVerbose(1); //Set debug info. Comment or set to 0 to disable
+    
+    //Using the PC class to calculage the gradient of an index with respect to the joints, for nullspace optimization
+    nullOptimization.reset(new PC(_manipulability,  _serial, _joints, 0, _JT)); //Using manipulability for nullspace optimization
 }
 
 void PerfConstraintsLWR::readParameters()
@@ -242,17 +245,19 @@ void PerfConstraintsLWR::update()
 		// v_ref.subvec(3,5).fill(0.0); //disable compliance in rotation
 		// saturateVelocity(index);
 
-		U_v += arma::diagmat(-F_v) * v_ref * robot->cycle; 
+		// U_v += arma::diagmat(-F_v) * v_ref * robot->cycle; 
 
-		//reset Uv just to monitor what is going on
-		if (pConstraints->getPerformanceIndex() > 1.2 * w_thT)
-			U_v.zeros();
+		// //reset Uv just to monitor what is going on
+		// if (pConstraints->getPerformanceIndex() > 1.2 * w_thT)
+		// 	U_v.zeros();
 
 		qdot_ref = Jinv * v_ref; //differential inverse kinematics 
 		// qdot_ref.fill(0.0); //set zero if no task motion is commanded
 
 		//nullsapce strategy (A needs to be calculated wrt the joint values)
-		// qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * A - nullspace_damping * qdot );
+		nullOptimization->calculateGradient(q);
+		arma::vec Anull = nullOptimization.getGradientScaled(10.0 * M_PI / 180.0, 5.0 * M_PI / 180.0); //Params: (clearange, range)
+		qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * Anull - nullspace_damping * qdot );
 
 		//simple nullspace strategy. just rotate a joint
 		// arma::vec qdot_null; qdot_null.zeros(7); qdot_null(4) = -0.02;
@@ -329,10 +334,10 @@ void PerfConstraintsLWR::write_to_file(){
 		for (int i=0; i<6; i++)
 			outStream << std::fixed << std::setprecision(6) << F_v.at(i) << ","; //31:36 constraint forces 
 
-		for (int i=0; i<6; i++)
-			outStream << std::fixed << std::setprecision(6) << U_v.at(i) << ","; //37:42 energy 
+		// for (int i=0; i<6; i++)
+		// 	outStream << std::fixed << std::setprecision(6) << U_v.at(i) << ","; //37:42 energy 
 
-		outStream << std::fixed << std::setprecision(6) << pConstraints->getPerformanceIndex(1) << ","; //24 w
+		outStream << std::fixed << std::setprecision(6) << nullOptimization->getPerformanceIndex(0) << ","; //24 w
 
 		outStream << endl; //newline
 	}

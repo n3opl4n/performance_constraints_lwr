@@ -59,6 +59,7 @@ private:
 	std::ofstream outStream;
 	bool write2file, use_impedance;
 	std::shared_ptr<PC> pConstraints;
+	std::shared_ptr<PC> nullOptimization;
 
 	double stiff_transl, stiff_rot, damp_transl, damp_rot, inertia_transl, inertia_rot; //impedance/admittance free-space
 	double nullspace_gain, nullspace_damping;
