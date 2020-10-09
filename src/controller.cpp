@@ -80,14 +80,16 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot,
 	* 6: lambda for rotation  [OPTIONAL: Leave empty for combined indices]
 	* 7: Performance indices [_manipulability, _MSV, _iCN]  
 	* 8: Calculation methods: _serial, _parallel
-	* 9: Gradient with respect to: [_cartesian (default), _joints] Selectable for only gradient calculation
+	* 9: Calculate J in the weak or the strong (default=true) sense. Only used for separate indices
+	*
+	* Gradient with respect to: [_cartesian (default), _joints] Selectable for only gradient calculation
 	*/
-    w_thT=0.14;
-    w_crT=0.03;
+    w_thT=0.1; //0.14;
+    w_crT=0.025; //0.03;
     w_thR=0.5;
     w_crR=0.1;
     lambda = 1.0;
-    pConstraints.reset(new PC(w_crT, w_thT, w_crR, w_thR, lambda, lambda, _MSV, _serial)); //Using MSV (better for human robot interaction)
+    pConstraints.reset(new PC(w_crT, w_thT, w_crR, w_thR, lambda, lambda, _MSV, _serial, false)); //Using MSV (better for human robot interaction)
     // pConstraints->setVerbose(1); //Set debug info. Comment or set to 0 to disable
     
     //Using the PC class to calculage the gradient of an index with respect to the joints, for nullspace optimization
@@ -179,8 +181,8 @@ void PerfConstraintsLWR::measure()
 	pose_vec.subvec(3,6) = Q;
 
 	//read Jacobian
-    J = robot->getJacobian().toArma(); //full jacobian
-    // J = robot->getJacobian().toArma().rows(0,2); //use only position part of J (if you don't care about orientation)
+    // J = robot->getJacobian().toArma(); //full jacobian
+    J = robot->getJacobian().toArma().rows(0,2); //use only position part of J (if you don't care about orientation)
     Jinv = arma::pinv(J);
 
    	M = robot->getMassMatrix().toArma();
@@ -241,7 +243,12 @@ void PerfConstraintsLWR::update()
 		double zeta = 1.2; //0.7 for slightly underdamped. Set 1 for critically damped
 		C_extra = zeta * ( 2.0 * arma::sqrt(M_d * K_eq) );
 
-		v_ref = arma::inv(M_d / robot->cycle + arma::max(C_d, arma::diagmat(C_extra))) * (M_d * v_ref / robot->cycle + ati_forces_ +  F_v);
+		arma::vec virtual_force(6);  virtual_force.zeros();
+		virtual_force(1)=5.0;
+		if (time>5)
+			virtual_force.zeros();
+
+		v_ref = arma::inv(M_d / robot->cycle + arma::max(C_d, arma::diagmat(C_extra))) * (M_d * v_ref / robot->cycle + /*ati_forces_*/virtual_force +  F_v);
 	
 		// v_ref.subvec(3,5).fill(0.0); //disable compliance in rotation
 		// saturateVelocity(index);
@@ -252,7 +259,7 @@ void PerfConstraintsLWR::update()
 		// if (pConstraints->getPerformanceIndex() > 1.2 * w_thT)
 		// 	U_v.zeros();
 
-		qdot_ref = Jinv * v_ref; //differential inverse kinematics 
+		qdot_ref = Jinv * v_ref.subvec(0,2); //differential inverse kinematics 
 		// qdot_ref.fill(0.0); //set zero if no task motion is commanded
 
 		//nullsapce strategy (A needs to be calculated wrt the joint values)
@@ -349,10 +356,13 @@ void PerfConstraintsLWR::init() {
 	arma::vec qT;
 	// qT << 0.0 << 0.4014 << 0.0 << -1.3963 << 0.0 << 1.0835 << 0.0;
 	// qT << 0.0 << 0.9599 << 0.0 << -1.85 << 0.1 << -1.815 << 0.0; 
-	qT << -M_PI/2.0 << -0.4014 << 0.0 << 1.3963 << 0.1 << -1.34835 << 0.0;
+	// qT << -M_PI/2.0 << -0.4014 << 0.0 << 1.3963 << 0.1 << -1.34835 << 0.0;
+
+	qT << 0.8431 << 0.6812 << 1.3334 << -1.0492 << 0.0007 << -0.0623 << 0.0; //to singularity 
+
 	robot->setMode(arl::robot::Mode::POSITION_CONTROL); //position mode
 	cout << "Moving to start configuration..." << endl;
-	robot->setJointTrajectory(qT, 6.0);
+	robot->setJointTrajectory(qT, 10.0);
 
 	//Generate trajectory to follow
     pose = robot->getTaskPose().matrix().toArma().submat(0,0,2,3);

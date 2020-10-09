@@ -1,5 +1,5 @@
 use_impedance: false #set true for impedance & false for admittance control
-nullspace_gain: 20.0
+nullspace_gain: 7.5
 nullspace_damping: 1.0
 
 #Custom Cartesian controller by sending join torques
