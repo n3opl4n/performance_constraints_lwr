@@ -14,7 +14,8 @@ using namespace std;
 using namespace arma;
 
 
-PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot)
+PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot,
+	std::shared_ptr<arl::robot::Sensor> ft_sensor)
 : arl::robot::Controller(robot, "Performance Constraints")
 {
 	nh_ = ros::NodeHandle("~");
@@ -41,11 +42,21 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot)
 	p = arma::zeros<arma::vec>(3);
     p_ref = arma::zeros<arma::vec>(3);
     
-    K_imp = arma::zeros<arma::mat>(6, 6);
-    D_imp = arma::zeros<arma::mat>(6, 6);
+    K_d = arma::zeros<arma::mat>(6, 6);
+    C_d = arma::zeros<arma::mat>(6, 6);
+    M_d = arma::zeros<arma::mat>(6, 6);
+    K_eq = arma::zeros<arma::vec>(6);
+    C_extra = arma::zeros<arma::vec>(6);
+
     R= arma::zeros<arma::mat>(3, 3);
     Qprev = arma::zeros<arma::vec>(4);
     Quat_ref = arma::zeros<arma::vec>(4);
+
+    v_ref=arma::zeros<arma::vec>(6);
+    F_v=arma::zeros<arma::vec>(6);
+    U_v=arma::zeros<arma::vec>(6);
+
+    ft_sensor_ = ft_sensor;
 
 	// get the parameters
     readParameters();
@@ -57,8 +68,32 @@ PerfConstraintsLWR::PerfConstraintsLWR(std::shared_ptr<arl::robot::Robot> robot)
 	* Gradient with respect to: [_cartesian (default), _joints] Selectable for only gradient calculation
 	* Separate position and orientation calculation
 	*/
-    pConstraints.reset(new PC(_manipulability,  _serial, _joints, false));
+    // pConstraints.reset(new PC(_manipulability,  _serial, _joints, false));
+     
+    /*Initialize performance constraints
+	* Arguments:
+	* 1: w_cr for translation or combined
+	* 2: w_th for translation or combined
+	* 3: w_cr for rotation [OPTIONAL: Leave empty for combined indices]
+	* 4: w_th for rotation [OPTIONAL: Leave empty for combined indices]
+	* 5: lambda for translation or combined
+	* 6: lambda for rotation  [OPTIONAL: Leave empty for combined indices]
+	* 7: Performance indices [_manipulability, _MSV, _iCN]  
+	* 8: Calculation methods: _serial, _parallel
+	* 9: Calculate J in the weak or the strong (default=true) sense. Only used for separate indices
+	*
+	* Gradient with respect to: [_cartesian (default), _joints] Selectable for only gradient calculation
+	*/
+    w_thT=0.1; //0.14;
+    w_crT=0.025; //0.03;
+    w_thR=0.5;
+    w_crR=0.1;
+    lambda = 1.0;
+    pConstraints.reset(new PC(w_crT, w_thT, w_crR, w_thR, lambda, lambda, _MSV, _serial, false)); //Using MSV (better for human robot interaction)
     // pConstraints->setVerbose(1); //Set debug info. Comment or set to 0 to disable
+    
+    //Using the PC class to calculage the gradient of an index with respect to the joints, for nullspace optimization
+    nullOptimization.reset(new PC(_manipulability,  _serial, _joints, 0, _JT)); //Using manipulability for nullspace optimization
 }
 
 void PerfConstraintsLWR::readParameters()
@@ -70,6 +105,8 @@ void PerfConstraintsLWR::readParameters()
     nh_.getParam("stiff_rot", stiff_rot);
     nh_.getParam("damp_transl", damp_transl);
     nh_.getParam("damp_rot", damp_rot);
+    nh_.getParam("inertia_transl", inertia_transl);
+    nh_.getParam("inertia_rot", inertia_rot);
     nh_.getParam("nullspace_gain", nullspace_gain);
     nh_.getParam("nullspace_damping", nullspace_damping);
 
@@ -105,11 +142,13 @@ void PerfConstraintsLWR::readParameters()
 
 void PerfConstraintsLWR::setImpedanceParams() {
 	//Impedance parameters
-	arma::vec temp_k, temp_c;
+	arma::vec temp_k, temp_c, temp_m;
 	temp_k << stiff_transl << stiff_transl << stiff_transl << stiff_rot << stiff_rot << stiff_rot; //stiffness [WARNING! TEMPORARY MODIFICATION IN XY STIFFNESS]
-	K_imp = diagmat(temp_k);
+	K_d = diagmat(temp_k);
 	temp_c << damp_transl << damp_transl << damp_transl << damp_rot << damp_rot << damp_rot; //damping
-	D_imp = diagmat(temp_c);
+	C_d = diagmat(temp_c);
+	temp_m << inertia_transl << inertia_transl << inertia_transl << inertia_rot << inertia_rot << inertia_rot; //inertia
+	M_d = diagmat(temp_m);
 
 }
 
@@ -131,7 +170,7 @@ void PerfConstraintsLWR::measure()
 	// update current position & orientation
 	p = pose.col(3);
 	R = pose.submat(0, 0, 2, 2);
-	// task_orientation_transform = arl::math::get6x6Rotation(R);
+	task_orientation_transform = arl::math::get6x6Rotation(R);
 
 	//update current orientation
 	Q = arl::math::rotToQuat(R);
@@ -142,7 +181,8 @@ void PerfConstraintsLWR::measure()
 	pose_vec.subvec(3,6) = Q;
 
 	//read Jacobian
-    J = robot->getJacobian().toArma();
+    // J = robot->getJacobian().toArma(); //full jacobian
+    J = robot->getJacobian().toArma().rows(0,2); //use only position part of J (if you don't care about orientation)
     Jinv = arma::pinv(J);
 
    	M = robot->getMassMatrix().toArma();
@@ -150,6 +190,9 @@ void PerfConstraintsLWR::measure()
     q = robot->getJointPosition().toArma(); //read joint position
 	qdot = robot->getJointVelocity().toArma(); //read joint velocity
 
+	//read external wrench from ATI and transform to base frame
+	ati_forces_tool = ft_sensor_->getData().toArma();
+	ati_forces_ = task_orientation_transform * ati_forces_tool; //rotate to base frame
 
 }
 
@@ -159,8 +202,9 @@ void PerfConstraintsLWR::update()
 {
 	time += robot->cycle;
 
-	pConstraints->calculateGradient(q); //calculate the gradient of a performance index [see constructor for details]
-	A = pConstraints->getGradient();
+	
+	// pConstraints->calculateGradient(q); //calculate the gradient of a performance index [see constructor for details]
+	// A = pConstraints->getGradient();
 
 	if (use_impedance) { //send torques to implement Cartesian impedance
 		// update orientation error
@@ -169,8 +213,8 @@ void PerfConstraintsLWR::update()
 		e_o = 2.0*quatDiff.rows(1, 3);
 
 		//Cartesian impedance control without inertia reshaping
-		u_x = J.submat(0, 0, 2, 6).t() * ( K_imp.submat(0,0,2,2)*(p_ref - p) + D_imp.submat(0,0,2,2)*(/*v_ref*/ - xdot.subvec(0,2))  ) 
-			+ J.submat(3, 0, 5, 6).t() * ( K_imp.submat(3,3,5,5)*e_o + D_imp.submat(3,3,5,5)*(/*omega_ref*/ - xdot.subvec(3,5)) ); 
+		u_x = J.submat(0, 0, 2, 6).t() * ( K_d.submat(0,0,2,2)*(p_ref - p) + C_d.submat(0,0,2,2)*(/*v_ref*/ - xdot.subvec(0,2))  ) 
+			+ J.submat(3, 0, 5, 6).t() * ( K_d.submat(3,3,5,5)*e_o + C_d.submat(3,3,5,5)*(/*omega_ref*/ - xdot.subvec(3,5)) ); 
 
 		//Null space controller
 		Minv = arma::inv(M);
@@ -181,14 +225,54 @@ void PerfConstraintsLWR::update()
 		//The controller
 		u = u_x + u_n;
 	}
-	else { //joint position control
-		// qdot_ref = Jinv * x_ref); //differential inverse kinematics 
-		qdot_ref.fill(0.0); //set zero if no task motion is commanded
+	else { //Certesian admittance control 
+		pConstraints->updatePC(q); //Performance constraints are calculated in here
+		F_v = pConstraints->getSingularityTreatmentForce();
+		A = pConstraints->getGradient();
 
-		qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * A - nullspace_damping * qdot );
+		if (pConstraints->getPerformanceIndex(0) <= w_thT) //the position part of w is considered here
+			K_eq.subvec(0,2) = lambda * arma::pow(A.subvec(0,2), 2) / pow(pConstraints->getPerformanceIndex(0) - w_crT, 2);
+		else
+			K_eq.subvec(0,2).zeros();
+
+		if (pConstraints->getPerformanceIndex(1) <= w_thR) //the orientation part of w is considered here
+			K_eq.subvec(3,5) = lambda * arma::pow(A.subvec(3,5), 2) / pow(pConstraints->getPerformanceIndex(1) - w_crR, 2);
+		else
+			K_eq.subvec(3,5).zeros();
+
+		double zeta = 1.2; //0.7 for slightly underdamped. Set 1 for critically damped
+		C_extra = zeta * ( 2.0 * arma::sqrt(M_d * K_eq) );
+
+		arma::vec virtual_force(6);  virtual_force.zeros();
+		virtual_force(1)=5.0;
+		if (time>5)
+			virtual_force.zeros();
+
+		v_ref = arma::inv(M_d / robot->cycle + arma::max(C_d, arma::diagmat(C_extra))) * (M_d * v_ref / robot->cycle + /*ati_forces_*/virtual_force +  F_v);
+	
+		// v_ref.subvec(3,5).fill(0.0); //disable compliance in rotation
+		// saturateVelocity(index);
+
+		// U_v += arma::diagmat(-F_v) * v_ref * robot->cycle; 
+
+		// //reset Uv just to monitor what is going on
+		// if (pConstraints->getPerformanceIndex() > 1.2 * w_thT)
+		// 	U_v.zeros();
+
+		qdot_ref = Jinv * v_ref.subvec(0,2); //differential inverse kinematics 
+		// qdot_ref.fill(0.0); //set zero if no task motion is commanded
+
+		//nullsapce strategy (A needs to be calculated wrt the joint values)
+		nullOptimization->calculateGradient(q);
+		arma::vec Anull = nullOptimization->getGradientScaled(10.0 * M_PI / 180.0, 5.0 * M_PI / 180.0); //Params: (clearange, range)
+		qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * Anull - nullspace_damping * qdot );
+
+		//simple nullspace strategy. just rotate a joint
+		// arma::vec qdot_null; qdot_null.zeros(7); qdot_null(4) = -0.02;
+		// qdot_ref += ( arma::eye<arma::mat>(7,7) - J.t() * Jinv.t() ) * ( nullspace_gain * qdot_null /*- nullspace_damping * qdot*/ );
 
 		q_ref += qdot_ref * robot->cycle;
-	}
+	}	
 }
 
 void PerfConstraintsLWR::command()
@@ -204,10 +288,32 @@ void PerfConstraintsLWR::command()
  */
 void PerfConstraintsLWR::print_to_monitor()
 {
-	if (fmod(time, .25) < 0.001) { //plot every once in a while
+	if (fmod(time, .15) < 0.001) { //plot every once in a while
 
 		cout << "T:" << std::fixed << std::setprecision(1) << time; // << " [" << std::fixed << std::setprecision(1) <<robot->cycle*1000. << "ms]";
 		cout << " w:" << std::setprecision(2) << std::setw(4) << pConstraints->getPerformanceIndex();
+		
+		cout << " F_h:[";
+		for (int i=0; i<3; i++)
+			cout << std::setw(5) << std::fixed << std::setprecision(1) << ati_forces_(i) << " ";
+		cout << "] ";
+
+		cout << " F_v:[";
+		for (int i=0; i<3; i++)
+			cout << std::setw(5) << std::fixed << std::setprecision(1) << F_v(i) << " ";
+		cout << "] ";
+
+		cout << " C_extra:[";
+		for (int i=0; i<6; i++)
+			cout << std::setw(5) << std::fixed << std::setprecision(1) << C_extra(i) << " ";
+		cout << "] ";
+
+		// cout << " U_v: " << std::setprecision(3) << arma::sum(U_v.subvec(0,2)) << " [";
+		// for (int i=0; i<3; i++)
+		// 	cout << std::setw(5) << std::fixed << std::setprecision(3) << U_v(i) << " ";
+		// cout << "] ";
+		
+
 		cout << endl; //empty line
 	}
 }
@@ -222,58 +328,41 @@ void PerfConstraintsLWR::write_to_file(){
 		for (int i=0; i<7; i++)
 			outStream << std::fixed << std::setprecision(6) << q.at(i) << ","; //5:11 joint values
 
-		outStream << std::fixed << std::setprecision(6) << pConstraints->getPerformanceIndex() << ",";
+		for (int i=0; i<6; i++)
+			outStream << std::fixed << std::setprecision(6) << ati_forces_.at(i) << ","; //12:17 ATI forces wrt. the base frame
+
+		for (int i=0; i<6; i++)
+			outStream << std::fixed << std::setprecision(6) << v_ref.at(i) << ","; //18:23 reference velocity
+
+		outStream << std::fixed << std::setprecision(6) << pConstraints->getPerformanceIndex() << ","; //24 w
+
+		for (int i=0; i<6; i++)
+			outStream << std::fixed << std::setprecision(6) << A.at(i) << ","; //25:30 gradient 
+
+		for (int i=0; i<6; i++)
+			outStream << std::fixed << std::setprecision(6) << F_v.at(i) << ","; //31:36 constraint forces 
+
+		// for (int i=0; i<6; i++)
+		// 	outStream << std::fixed << std::setprecision(6) << U_v.at(i) << ","; //37:42 energy 
+
+		outStream << std::fixed << std::setprecision(6) << nullOptimization->getPerformanceIndex(0) << ","; //24 w
 
 		outStream << endl; //newline
 	}
 }
 
-// /// Keyboard control in a thread
-// void PerfConstraintsLWR::keyboardControl()
-// {
-// 	//change terminal options to rutern immediately after a keyboard hit
-// 	struct termios old = {0};
-//     if (tcgetattr(0, &old) < 0)
-//             perror("tcsetattr()");
-//     old.c_lflag &= ~ICANON;
-//     old.c_lflag &= ~ECHO;
-//     old.c_cc[VMIN] = 1;
-//     old.c_cc[VTIME] = 0;
-//     if (tcsetattr(0, TCSANOW, &old) < 0)
-//             perror("tcsetattr ICANON");
-
-// 	int key=0;
-// 	while (key!=10) { //Enter
-// 		key = getch();
-// 		// std::cout << "Pressed: " << key << std::endl;
-
-// 		switch (key) {
-// 			case 32: //Spacebar
-// 				cout << "Resetting system..." << endl;
-// 				// reset_flag = true;
-// 				break;
-// 		}
-
-// 	}
-
-// 	//reset terminal options (hopefully)
-// 	old.c_lflag |= ICANON;
-//     old.c_lflag |= ECHO;
-//     if (tcsetattr(0, TCSADRAIN, &old) < 0)
-//             perror ("tcsetattr ~ICANON");
-
-// 	cout << "Stopping" << endl;
-
-// 	// user_stop1 = true;
-// }
-
 void PerfConstraintsLWR::init() {
 	//move to initial pose
 	arma::vec qT;
-	qT << 0.4436 << 0.4014 << -0.6207 << -1.3963 << 1.6780 << 0.2835 << 0.0953;
+	// qT << 0.0 << 0.4014 << 0.0 << -1.3963 << 0.0 << 1.0835 << 0.0;
+	// qT << 0.0 << 0.9599 << 0.0 << -1.85 << 0.1 << -1.815 << 0.0; 
+	// qT << -M_PI/2.0 << -0.4014 << 0.0 << 1.3963 << 0.1 << -1.34835 << 0.0;
+
+	qT << 0.8431 << 0.6812 << 1.3334 << -1.0492 << 0.0007 << -0.0623 << 0.0; //to singularity 
+
 	robot->setMode(arl::robot::Mode::POSITION_CONTROL); //position mode
 	cout << "Moving to start configuration..." << endl;
-	robot->setJointTrajectory(qT, 6.0);
+	robot->setJointTrajectory(qT, 10.0);
 
 	//Generate trajectory to follow
     pose = robot->getTaskPose().matrix().toArma().submat(0,0,2,3);
@@ -295,8 +384,9 @@ bool PerfConstraintsLWR::run()
 
 	init();
 
+	setImpedanceParams();
+
 	if (use_impedance) { //change mode only if we want to send torques
-	    setImpedanceParams();
 
 		//Switch to impedance control
 		robot->setMode(arl::robot::Mode::TORQUE_CONTROL);

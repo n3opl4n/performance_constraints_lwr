@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   lwr_robot
   performance_constraints
+  autharl_ati_sensor
   )
 
 catkin_package()
